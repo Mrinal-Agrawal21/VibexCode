@@ -11,6 +11,7 @@ import authservice from "@/app/auth/firebase-auth";
 interface User {
   $id: string;
   name: string;
+  email: string;
 }
 
 interface Forum {
@@ -84,6 +85,7 @@ export default function CommunityPage() {
           setUser({
             $id: authUser.$id,
             name: authUser.name || authUser.email || "User",
+            email: authUser.email || "",
           });
         } else {
           setUser(null);
@@ -242,6 +244,7 @@ export default function CommunityPage() {
               conversationId={selected}
               selfId={user.$id}
               selfName={user.name}
+              selfEmail={user.email}
               channelName={activeForum.key}
               channelDescription={activeForum.description}
             />
