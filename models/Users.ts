@@ -97,6 +97,19 @@ const UserSchema = new mongoose.Schema(
       soundEnabled: { type: Boolean, default: true },
       showDifficulty: { type: Boolean, default: true },
     },
+
+    // ✅ Chat moderation (warnings + temporary bans)
+    moderation: {
+      warnings: [
+        {
+          at: { type: Date, default: Date.now },
+          reason: { type: String, default: "abuse" },
+          conversationId: { type: String, default: "" },
+          messagePreview: { type: String, default: "", maxlength: 200 },
+        },
+      ],
+      chatBannedUntil: { type: Date },
+    },
   },
   {
     timestamps: true, // Adds createdAt and updatedAt

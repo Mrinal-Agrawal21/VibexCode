@@ -10,6 +10,7 @@ interface Props {
   conversationId: string;
   selfId: string;
   selfName: string;
+  selfEmail?: string;
   // Optional — shown in the channel-start banner at the top of the scroll area.
   channelName?: string;
   channelDescription?: string;
@@ -80,6 +81,7 @@ export default function ChatWindow({
   conversationId,
   selfId,
   selfName,
+  selfEmail,
   channelName,
   channelDescription,
 }: Props) {
@@ -90,6 +92,13 @@ export default function ChatWindow({
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const [openMenuFor, setOpenMenuFor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!notice) return;
+    const id = setTimeout(() => setNotice(null), 5000);
+    return () => clearTimeout(id);
+  }, [notice]);
 
   useEffect(() => {
     const fetchMessages = async () => {
@@ -111,7 +120,9 @@ export default function ChatWindow({
     if (!socket) return;
     socket.emit("join", { conversationId });
     socket.on("message", (msg: Message) => {
-      setMessages((prev) => [...prev, msg]);
+      setMessages((prev) =>
+        prev.some((m) => m._id === msg._id) ? prev : [...prev, msg]
+      );
     });
     return () => {
       socket.emit("leave", { conversationId });
@@ -134,19 +145,33 @@ export default function ChatWindow({
   const handleSend = async () => {
     const body = input.trim();
     if (!body) return;
+    setNotice(null);
     const messageData = {
       conversationId,
       senderId: selfId,
       senderName: selfName,
+      senderEmail: selfEmail,
       body,
     };
-    socket?.emit("message", messageData);
     try {
-      await axios.post(`/api/messages/${conversationId}`, messageData);
+      const res = await axios.post(
+        `/api/messages/${conversationId}`,
+        messageData
+      );
+      const saved = res.data as Message;
+      setMessages((prev) =>
+        prev.some((m) => m._id === saved._id) ? prev : [...prev, saved]
+      );
+      socket?.emit("message", saved);
+      setInput("");
     } catch (err) {
+      const errorMsg =
+        axios.isAxiosError(err) && err.response?.data?.error
+          ? String(err.response.data.error)
+          : "Failed to send message.";
+      setNotice(errorMsg);
       console.error("Failed to save message:", err);
     }
-    setInput("");
   };
 
   const handleEditClick = (id: string, body: string) => {
@@ -270,6 +295,13 @@ export default function ChatWindow({
                 )}
               >
                 {/* Avatar (only for others, only at start of a run) */}
+            {notice && (
+              <div className="fixed left-1/2 top-20 z-50 w-[min(92vw,36rem)] -translate-x-1/2">
+                <div className="rounded-lg border border-red-200 bg-red-50 text-red-700 text-sm px-4 py-3 shadow-lg dark:border-red-800/60 dark:bg-red-900/30 dark:text-red-200">
+                  {notice}
+                </div>
+              </div>
+            )}
                 {!isSelf &&
                   (startsRun ? (
                     <div
