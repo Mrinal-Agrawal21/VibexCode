@@ -1,11 +1,12 @@
 // app/api/users/route.ts
 import { NextResponse } from "next/server";
 import { db } from "@/lib/firebase-admin";
+import type { QueryDocumentSnapshot } from "firebase-admin/firestore";
 
 export async function GET() {
   try {
     const snapshot = await db.collection("users").get();
-    const users = snapshot.docs.map((doc) => {
+    const users = snapshot.docs.map((doc: QueryDocumentSnapshot) => {
       const data = doc.data();
       return {
         id: doc.id,

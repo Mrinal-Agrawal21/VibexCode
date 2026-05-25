@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState } from "react";
 import { useSelector } from "react-redux";
-import { collection, getDocs } from "firebase/firestore";
+import { collection, getDocs, QueryDocumentSnapshot } from "firebase/firestore";
 import Link from "next/link";
 import { db } from "@/lib/firebase";
 import Navbar from "../components/Navbar";
@@ -33,7 +33,7 @@ const LeaderboardsPage = () => {
     const fetchLeaderboard = async () => {
       try {
         const snapshot = await getDocs(collection(db, COLLECTION_NAME));
-        const data: Player[] = snapshot.docs.map((doc) => {
+        const data: Player[] = snapshot.docs.map((doc: QueryDocumentSnapshot) => {
           const d = doc.data();
           const solvedIds = Array.isArray(d.solvedQuestionIds)
             ? d.solvedQuestionIds

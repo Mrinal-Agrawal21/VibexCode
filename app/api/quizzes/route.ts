@@ -22,7 +22,7 @@ export async function GET(req: NextRequest) {
         }
 
         const snapshot = await query.limit(100).get();
-        const quizzes = snapshot.docs.map((doc) => {
+        const quizzes = snapshot.docs.map((doc: any) => {
             const data = doc.data();
             return {
                 _id: doc.id,

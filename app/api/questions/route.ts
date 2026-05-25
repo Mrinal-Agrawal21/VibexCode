@@ -121,7 +121,7 @@ export async function GET(req: Request) {
         }
 
         const snapshot = await query.get();
-        const questions: LeanQuestion[] = snapshot.docs.map((doc) => {
+        const questions: LeanQuestion[] = snapshot.docs.map((doc: any) => {
             const q = doc.data();
             return {
                 _id: doc.id,

@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { collection, getDocs } from "firebase/firestore";
+import { collection, getDocs, QueryDocumentSnapshot } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 interface Player {
   name: string;
@@ -20,7 +20,7 @@ const Lead = () => {
       try {
         const querySnapshot = await getDocs(collection(db, COLLECTION_NAME));
 
-        const players: Player[] = querySnapshot.docs.map((doc) => {
+        const players: Player[] = querySnapshot.docs.map((doc: QueryDocumentSnapshot) => {
           const data = doc.data();
           const solvedIds = Array.isArray(data.solvedQuestionIds)
             ? data.solvedQuestionIds

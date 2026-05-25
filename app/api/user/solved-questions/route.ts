@@ -11,7 +11,7 @@
 // lib/auth.ts for the security caveat.
 
 import { NextResponse } from "next/server";
-import { FieldPath } from "firebase-admin/firestore";
+import { FieldPath, QueryDocumentSnapshot } from "firebase-admin/firestore";
 import { db } from "@/lib/firebase-admin";
 import { normalizeEmail } from "@/lib/firestore-helpers";
 
@@ -67,7 +67,7 @@ export async function GET(request: Request) {
         .collection("questions")
         .where(FieldPath.documentId(), "in", chunk)
         .get();
-      chunkSnap.docs.forEach((doc) => {
+      chunkSnap.docs.forEach((doc: QueryDocumentSnapshot) => {
         const data = doc.data();
         solvedQuestions.push({
           id: doc.id,
@@ -79,10 +79,11 @@ export async function GET(request: Request) {
     }
 
     const allQuestionsSnap = await db.collection("questions").get();
-    const allQuestions = allQuestionsSnap.docs.map((doc) => {
-      const data = doc.data();
-      return { tags: data.tags as string[] | undefined, difficulty: data.difficulty as string | undefined };
-    });
+    const allQuestions: Array<{ tags: string[] | undefined; difficulty: string | undefined }> =
+      (allQuestionsSnap.docs as QueryDocumentSnapshot[]).map((doc: QueryDocumentSnapshot) => {
+        const data = doc.data();
+        return { tags: data.tags as string[] | undefined, difficulty: data.difficulty as string | undefined };
+      });
 
     const groupingKey = (q: { tags?: string[]; difficulty?: string }) =>
       (q.tags && q.tags[0]) || q.difficulty || "uncategorized";

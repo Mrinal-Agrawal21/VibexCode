@@ -21,7 +21,7 @@ export async function GET(req: NextRequest) {
             .orderBy("createdAt", "desc")
             .get();
 
-        const tasks = snapshot.docs.map((doc) => ({ _id: doc.id, ...doc.data() }));
+        const tasks = snapshot.docs.map((doc: any) => ({ _id: doc.id, ...doc.data() }));
         return NextResponse.json(tasks);
     } catch (error) {
         const err = error as Error;
