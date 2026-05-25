@@ -9,8 +9,8 @@
  * shape (`$id`, `name`, `email`, `emailVerification`) so existing call
  * sites that destructure those fields keep working without changes.
  *
- * On signUp/signIn we also POST to /api/signup so a corresponding Mongo
- * Users record exists. The Mongo record uses `firebaseUid` as the
+ * On signUp/signIn we also POST to /api/signup so a corresponding
+ * Firestore Users record exists. The record uses `firebaseUid` as the
  * external identity link.
  */
 
@@ -43,7 +43,7 @@ function toAuthUser(u: FirebaseUser): AuthUser {
   };
 }
 
-async function ensureMongoUser(opts: {
+async function ensureFirestoreUser(opts: {
   firebaseUid: string;
   email: string;
   username: string;
@@ -54,9 +54,9 @@ async function ensureMongoUser(opts: {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(opts),
     });
-    // /api/signup is idempotent on existing user (returns 409) — that's fine.
+    // /api/signup is idempotent on existing user — that's fine.
   } catch (e) {
-    console.warn("Failed to sync Mongo user record (non-blocking):", e);
+    console.warn("Failed to sync Firestore user record (non-blocking):", e);
   }
 }
 
@@ -83,7 +83,7 @@ class FirebaseAuthService {
       }
     }
     const user = toAuthUser(cred.user);
-    await ensureMongoUser({
+    await ensureFirestoreUser({
       firebaseUid: cred.user.uid,
       email: user.email,
       username: name || email.split("@")[0],
@@ -95,7 +95,7 @@ class FirebaseAuthService {
     const cred = await signInWithEmailAndPassword(this.auth, email, password);
     const user = toAuthUser(cred.user);
     // Best-effort: make sure Mongo has a record for this user too.
-    await ensureMongoUser({
+    await ensureFirestoreUser({
       firebaseUid: cred.user.uid,
       email: user.email,
       username: user.name,

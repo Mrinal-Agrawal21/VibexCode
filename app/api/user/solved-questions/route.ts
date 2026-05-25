@@ -11,10 +11,9 @@
 // lib/auth.ts for the security caveat.
 
 import { NextResponse } from "next/server";
-import { isValidObjectId } from "mongoose";
-import connectDB from "@/lib/mongodb";
-import User from "@/models/Users";
-import Questions from "@/models/Questions";
+import { FieldPath } from "firebase-admin/firestore";
+import { db } from "@/lib/firebase-admin";
+import { normalizeEmail } from "@/lib/firestore-helpers";
 
 type SolvedQuestionCategory = {
   name: string;
@@ -26,7 +25,7 @@ type SolvedQuestionCategory = {
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
-    const userEmail = searchParams.get("userEmail");
+    const userEmail = normalizeEmail(searchParams.get("userEmail"));
 
     if (!userEmail) {
       return NextResponse.json(
@@ -35,30 +34,55 @@ export async function GET(request: Request) {
       );
     }
 
-    await connectDB();
-
-    const user = await User.findOne({ email: userEmail.toLowerCase() });
-    if (!user) {
+    const userSnapshot = await db
+      .collection("users")
+      .where("email", "==", userEmail)
+      .limit(1)
+      .get();
+    if (userSnapshot.empty) {
       return NextResponse.json({ error: "User not found" }, { status: 404 });
     }
 
-    const solvedIds: string[] = (user.solvedQuestionIds || []).filter(
-      (id: string) => isValidObjectId(id)
-    );
+    const user = userSnapshot.docs[0].data();
+    const solvedIds = Array.isArray(user.solvedQuestionIds)
+      ? (user.solvedQuestionIds as string[])
+      : Array.isArray(user.solvedQuestions)
+        ? (user.solvedQuestions as Array<{ questionId?: string }>)
+            .map((sq) => sq.questionId)
+            .filter((id): id is string => typeof id === "string")
+        : [];
 
-    const solvedQuestions = await Questions.find({
-      _id: { $in: solvedIds },
-    }).lean<
-      Array<{
-        _id: unknown;
-        title?: string;
-        tags?: string[];
-        difficulty?: string;
-      }>
-    >();
-    const allQuestions = await Questions.find({}).lean<
-      Array<{ tags?: string[]; difficulty?: string }>
-    >();
+    const uniqueSolvedIds = Array.from(new Set(solvedIds));
+
+    const solvedQuestions: Array<{
+      id: string;
+      title?: string;
+      tags?: string[];
+      difficulty?: string;
+    }> = [];
+
+    for (let i = 0; i < uniqueSolvedIds.length; i += 10) {
+      const chunk = uniqueSolvedIds.slice(i, i + 10);
+      const chunkSnap = await db
+        .collection("questions")
+        .where(FieldPath.documentId(), "in", chunk)
+        .get();
+      chunkSnap.docs.forEach((doc) => {
+        const data = doc.data();
+        solvedQuestions.push({
+          id: doc.id,
+          title: data.title,
+          tags: data.tags,
+          difficulty: data.difficulty,
+        });
+      });
+    }
+
+    const allQuestionsSnap = await db.collection("questions").get();
+    const allQuestions = allQuestionsSnap.docs.map((doc) => {
+      const data = doc.data();
+      return { tags: data.tags as string[] | undefined, difficulty: data.difficulty as string | undefined };
+    });
 
     const groupingKey = (q: { tags?: string[]; difficulty?: string }) =>
       (q.tags && q.tags[0]) || q.difficulty || "uncategorized";

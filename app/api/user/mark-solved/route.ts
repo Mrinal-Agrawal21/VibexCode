@@ -1,7 +1,7 @@
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
-import connectDB from "@/lib/mongodb";
-import UserModel from "@/models/Users";
+import { db, FieldValue } from "@/lib/firebase-admin";
+import { normalizeEmail, toDate } from "@/lib/firestore-helpers";
 
 // POST /api/user/mark-solved
 // Body: { userEmail, questionId, submittedAnswer?, language?, executionStats? }
@@ -20,30 +20,95 @@ export async function POST(req: NextRequest) {
       executionStats,
     } = body || {};
 
-    if (!userEmail || typeof userEmail !== "string") {
+    const normalizedEmail = normalizeEmail(userEmail);
+    if (!normalizedEmail) {
       return NextResponse.json({ error: "Invalid userEmail" }, { status: 400 });
     }
     if (!questionId || typeof questionId !== "string") {
       return NextResponse.json({ error: "Invalid questionId" }, { status: 400 });
     }
 
-    await connectDB();
-    const user = await UserModel.findOne({ email: userEmail.toLowerCase() });
-    if (!user) {
+    const users = db.collection("users");
+    const snapshot = await users
+      .where("email", "==", normalizedEmail)
+      .limit(1)
+      .get();
+    if (snapshot.empty) {
       return NextResponse.json({ error: "User not found" }, { status: 404 });
     }
 
-    // Use the schema's helper which keeps both solvedQuestions and the
-    // legacy solvedQuestionIds in sync, and updates streak/stats.
-    const added = user.addSolvedQuestion(
-      questionId,
-      submittedAnswer,
-      language,
-      executionStats
-    );
-    if (added) await user.save();
+    const userRef = snapshot.docs[0].ref;
+    let alreadySolved = false;
 
-    return NextResponse.json({ success: true, alreadySolved: !added });
+    await db.runTransaction(async (tx) => {
+      const userSnap = await tx.get(userRef);
+      if (!userSnap.exists) return;
+      const data = userSnap.data() || {};
+      const solvedQuestions = Array.isArray(data.solvedQuestions)
+        ? [...data.solvedQuestions]
+        : [];
+      const solvedQuestionIds = Array.isArray(data.solvedQuestionIds)
+        ? [...data.solvedQuestionIds]
+        : [];
+
+      alreadySolved = solvedQuestions.some(
+        (sq) => sq?.questionId === questionId
+      );
+      if (alreadySolved) return;
+
+      solvedQuestions.push({
+        questionId,
+        solvedAt: new Date().toISOString(),
+        submittedAnswer: submittedAnswer || "",
+        language: language || "Javascript",
+        executionStats: executionStats || {},
+      });
+
+      if (!solvedQuestionIds.includes(questionId)) {
+        solvedQuestionIds.push(questionId);
+      }
+
+      const stats = {
+        ...(typeof data.stats === "object" && data.stats ? data.stats : {}),
+      } as {
+        totalSolved?: number;
+        currentStreak?: number;
+        longestStreak?: number;
+        lastActiveDate?: string | Date;
+      };
+
+      stats.totalSolved = solvedQuestions.length;
+      stats.lastActiveDate = new Date().toISOString();
+
+      const today = new Date();
+      const lastActive = toDate(stats.lastActiveDate) || today;
+      const daysDiff = Math.floor(
+        (today.getTime() - lastActive.getTime()) / (1000 * 60 * 60 * 24)
+      );
+
+      if (daysDiff <= 1) {
+        stats.currentStreak = (stats.currentStreak || 0) + 1;
+        stats.longestStreak = Math.max(
+          stats.longestStreak || 0,
+          stats.currentStreak
+        );
+      } else {
+        stats.currentStreak = 1;
+      }
+
+      tx.set(
+        userRef,
+        {
+          solvedQuestions,
+          solvedQuestionIds,
+          stats,
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+    });
+
+    return NextResponse.json({ success: true, alreadySolved });
   } catch (error) {
     console.error("Error marking solved question:", error);
     return NextResponse.json(

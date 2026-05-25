@@ -3,37 +3,49 @@
 // heartbeat — see lib/presence.ts. The stored `status` enum is legacy.
 
 import { NextResponse } from "next/server";
-import connectDB from "@/lib/mongodb";
-import UserModel from "@/models/Users";
+import { db } from "@/lib/firebase-admin";
 import { derivePresence } from "@/lib/presence";
+import { toDate } from "@/lib/firestore-helpers";
 
 type LeanUser = {
-  _id: unknown;
-  email: string;
+  _id: string;
+  email?: string;
   username?: string;
   name?: string;
-  lastSeen?: Date;
+  lastSeen?: string | Date;
   activity?: string;
   stats?: { totalSolved?: number };
-  createdAt?: Date;
-  updatedAt?: Date;
+  createdAt?: string | Date;
+  updatedAt?: string | Date;
 };
 
 export async function GET() {
   try {
-    await connectDB();
-
-    const users = await UserModel.find({})
-      .select(
-        "email username name lastSeen activity stats.totalSolved createdAt updatedAt"
-      )
-      .sort({ lastSeen: -1, createdAt: -1 })
-      .limit(200)
-      .lean<LeanUser[]>();
+    const snapshot = await db.collection("users").get();
+    const users = snapshot.docs
+      .map((doc) => {
+        const { _id: _ignored, ...rest } = doc.data() as LeanUser;
+        return { ...rest, _id: doc.id };
+      })
+      .map((u) => ({
+        ...u,
+        lastSeen: toDate(u.lastSeen) || undefined,
+        createdAt: toDate(u.createdAt) || undefined,
+        updatedAt: toDate(u.updatedAt) || undefined,
+      }))
+      .sort((a, b) => {
+        const aLast = a.lastSeen ? new Date(a.lastSeen).getTime() : 0;
+        const bLast = b.lastSeen ? new Date(b.lastSeen).getTime() : 0;
+        if (aLast !== bLast) return bLast - aLast;
+        const aCreated = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const bCreated = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        return bCreated - aCreated;
+      })
+      .slice(0, 200);
 
     const decorated = users.map((u) => ({
       ...u,
-      status: derivePresence(u.lastSeen),
+      status: derivePresence(u.lastSeen || null),
     }));
 
     return NextResponse.json(decorated);

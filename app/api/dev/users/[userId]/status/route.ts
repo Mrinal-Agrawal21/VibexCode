@@ -1,13 +1,11 @@
 // PUT /api/dev/users/[userId]/status
 // Body: { status: "Online" | "Idle" | "Busy" | "Offline" }
 //
-// Updates the user's status field on the MongoDB Users document.
-// Previously used node-appwrite's users.updatePrefs(); migrated to Mongoose.
+// Updates the user's status field on the Firestore Users document.
+// Previously used node-appwrite's users.updatePrefs(); migrated to Firestore.
 
 import { NextResponse } from "next/server";
-import { isValidObjectId } from "mongoose";
-import connectDB from "@/lib/mongodb";
-import UserModel from "@/models/Users";
+import { db, FieldValue } from "@/lib/firebase-admin";
 
 const ALLOWED_STATUSES = ["Online", "Idle", "Busy", "Offline"] as const;
 type UserStatus = (typeof ALLOWED_STATUSES)[number];
@@ -26,9 +24,6 @@ export async function PUT(
   const body = await req.json().catch(() => ({}));
   const { status } = body || {};
 
-  if (!isValidObjectId(userId)) {
-    return NextResponse.json({ error: "Invalid userId" }, { status: 400 });
-  }
   if (!isUserStatus(status)) {
     return NextResponse.json(
       {
@@ -39,17 +34,26 @@ export async function PUT(
   }
 
   try {
-    await connectDB();
-    const updated = await UserModel.findByIdAndUpdate(
-      userId,
-      { status },
-      { new: true }
-    );
-    if (!updated) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
+    const users = db.collection("users");
+    const byId = await users.doc(userId).get();
+    if (byId.exists) {
+      await byId.ref.set(
+        { status, updatedAt: FieldValue.serverTimestamp() },
+        { merge: true }
+      );
+      return NextResponse.json({ message: "Status updated", status });
     }
 
-    return NextResponse.json({ message: "Status updated", status });
+    const byUid = await users.where("firebaseUid", "==", userId).limit(1).get();
+    if (!byUid.empty) {
+      await byUid.docs[0].ref.set(
+        { status, updatedAt: FieldValue.serverTimestamp() },
+        { merge: true }
+      );
+      return NextResponse.json({ message: "Status updated", status });
+    }
+
+    return NextResponse.json({ error: "User not found" }, { status: 404 });
   } catch (error) {
     console.error("Failed to update status:", error);
     return NextResponse.json(

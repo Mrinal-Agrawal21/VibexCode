@@ -2,9 +2,7 @@
 //   Body: { userEmail }   — admin-only
 
 import { NextRequest, NextResponse } from "next/server";
-import { isValidObjectId } from "mongoose";
-import connectDB from "@/lib/mongodb";
-import Quizzes from "@/models/Quizzes";
+import { db } from "@/lib/firebase-admin";
 import { isAdminEmail } from "@/lib/auth";
 
 export const runtime = "nodejs";
@@ -15,7 +13,7 @@ export async function DELETE(
 ) {
   try {
     const { id } = await context.params;
-    if (!isValidObjectId(id)) {
+    if (!id) {
       return NextResponse.json(
         { success: false, error: "Invalid quiz id" },
         { status: 400 }
@@ -30,14 +28,16 @@ export async function DELETE(
       );
     }
 
-    await connectDB();
-    const result = await Quizzes.findByIdAndDelete(id);
-    if (!result) {
+    const docRef = db.collection("quizzes").doc(id);
+    const doc = await docRef.get();
+    if (!doc.exists) {
       return NextResponse.json(
         { success: false, error: "Quiz not found" },
         { status: 404 }
       );
     }
+
+    await docRef.delete();
     return NextResponse.json({ success: true });
   } catch (error) {
     const message =

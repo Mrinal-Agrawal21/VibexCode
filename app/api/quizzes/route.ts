@@ -4,26 +4,34 @@
 //   Body: { userEmail, title, description?, date (ISO string), registrationLink? }
 
 import { NextRequest, NextResponse } from "next/server";
-import connectDB from "@/lib/mongodb";
-import Quizzes from "@/models/Quizzes";
+import { db, FieldValue, Timestamp } from "@/lib/firebase-admin";
 import { isAdminEmail } from "@/lib/auth";
+import { toIso } from "@/lib/firestore-helpers";
 
 export const runtime = "nodejs";
 
 export async function GET(req: NextRequest) {
   try {
-    await connectDB();
-
     const { searchParams } = new URL(req.url);
     const scope = searchParams.get("scope");
 
-    // `?scope=all` returns every quiz, newest-first — used by the admin
-    // panel. Default (no scope) keeps the public "upcoming only" behavior.
-    const filter = scope === "all" ? {} : { date: { $gte: new Date() } };
-    const sort: Record<string, 1 | -1> =
-      scope === "all" ? { date: -1 } : { date: 1 };
+    const quizzesRef = db.collection("quizzes");
+    let query = quizzesRef.orderBy("date", scope === "all" ? "desc" : "asc");
+    if (scope !== "all") {
+      query = query.where("date", ">=", Timestamp.fromDate(new Date()));
+    }
 
-    const quizzes = await Quizzes.find(filter).sort(sort).limit(100).lean();
+    const snapshot = await query.limit(100).get();
+    const quizzes = snapshot.docs.map((doc) => {
+      const data = doc.data();
+      return {
+        _id: doc.id,
+        ...data,
+        date: toIso(data.date),
+        createdAt: toIso(data.createdAt),
+        updatedAt: toIso(data.updatedAt),
+      };
+    });
 
     return NextResponse.json({ success: true, quizzes });
   } catch (error) {
@@ -64,18 +72,32 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    await connectDB();
-
-    const quiz = await Quizzes.create({
+    const quizRef = await db.collection("quizzes").add({
       title: title.trim(),
       description: typeof description === "string" ? description.trim() : "",
-      date: parsedDate,
+      date: Timestamp.fromDate(parsedDate),
       registrationLink:
         typeof registrationLink === "string" ? registrationLink.trim() : "",
-      createdByEmail: userEmail.toLowerCase(),
+      createdByEmail: typeof userEmail === "string" ? userEmail.toLowerCase() : "",
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
     });
 
-    return NextResponse.json({ success: true, quiz }, { status: 201 });
+    const created = await quizRef.get();
+    const data = created.data() || {};
+    return NextResponse.json(
+      {
+        success: true,
+        quiz: {
+          _id: quizRef.id,
+          ...data,
+          date: toIso(data.date),
+          createdAt: toIso(data.createdAt),
+          updatedAt: toIso(data.updatedAt),
+        },
+      },
+      { status: 201 }
+    );
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Failed to create quiz";

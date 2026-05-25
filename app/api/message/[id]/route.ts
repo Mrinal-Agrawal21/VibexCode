@@ -1,24 +1,52 @@
 import { NextRequest, NextResponse } from "next/server";
-import connectDB from "@/lib/mongodb";
-import Message from "@/models/Messages";
-import Users from "@/models/Users";
-import { isValidObjectId } from "mongoose";
+import { db, FieldValue, Timestamp } from "@/lib/firebase-admin";
 import { detectAbuse } from "@/lib/moderation";
+import { toDate } from "@/lib/firestore-helpers";
 
 const WARNING_WINDOW_MS = 24 * 60 * 60 * 1000;
 const BAN_WINDOW_MS = 24 * 60 * 60 * 1000;
 const MAX_WARNINGS = 3;
 
 type ModerationWarning = {
-  at?: Date;
+  at?: Timestamp | Date | string;
 };
+
+type ModerationState = {
+  warnings?: ModerationWarning[];
+  chatBannedUntil?: Timestamp | Date | string;
+};
+
+type UserRecord = {
+  email?: string;
+  username?: string;
+  firebaseUid?: string;
+  moderation?: ModerationState;
+};
+
+async function resolveUser(senderId: string) {
+  const users = db.collection("users");
+  const byId = await users.doc(senderId).get();
+  if (byId.exists) {
+    return { ref: byId.ref, data: byId.data() as UserRecord };
+  }
+
+  const byUid = await users
+    .where("firebaseUid", "==", senderId)
+    .limit(1)
+    .get();
+  if (!byUid.empty) {
+    const doc = byUid.docs[0];
+    return { ref: doc.ref, data: doc.data() as UserRecord };
+  }
+
+  return null;
+}
 
 export async function PUT(
   req: NextRequest,
   context: { params: Promise<{ id: string }> }
 ) {
   try {
-    await connectDB();
     const { id } = await context.params;
 
     const { senderId, body: newBody } = await req.json();
@@ -30,27 +58,21 @@ export async function PUT(
       );
     }
 
-    const userLookup: Array<Record<string, string>> = [
-      { firebaseUid: senderId },
-      { appwriteId: senderId },
-    ];
-    if (isValidObjectId(senderId)) {
-      userLookup.push({ _id: senderId });
-    }
-
-    const user = await Users.findOne({ $or: userLookup }).select("moderation");
-
-    if (!user) {
+    const userRecord = await resolveUser(senderId);
+    if (!userRecord) {
       return NextResponse.json({ error: "User not found" }, { status: 404 });
     }
 
+    const user = userRecord.data;
+
     const now = new Date();
     const bannedUntil = user.moderation?.chatBannedUntil;
-    if (bannedUntil && bannedUntil > now) {
+    const bannedUntilDate = toDate(bannedUntil);
+    if (bannedUntilDate && bannedUntilDate > now) {
       return NextResponse.json(
         {
           error: "You are temporarily banned from chat.",
-          bannedUntil: bannedUntil.toISOString(),
+          bannedUntil: bannedUntilDate.toISOString(),
         },
         { status: 403 }
       );
@@ -59,28 +81,33 @@ export async function PUT(
     const abuse = detectAbuse(String(newBody));
     if (abuse.hit) {
       const windowStart = new Date(now.getTime() - WARNING_WINDOW_MS);
-      const recentWarnings = (user.moderation?.warnings || []).filter(
-        (w: ModerationWarning) => w.at && w.at >= windowStart
-      );
+      const warnings = user.moderation?.warnings || [];
+      const recentWarnings = warnings.filter((w: ModerationWarning) => {
+        const warningDate = toDate(w.at);
+        return warningDate ? warningDate >= windowStart : false;
+      });
       const warningCount = recentWarnings.length + 1;
 
       const warningRecord = {
-        at: now,
+        at: Timestamp.fromDate(now),
         reason: "abuse",
         conversationId: "edit",
         messagePreview: String(newBody).slice(0, 200),
       };
 
-      const update: Record<string, unknown> = {
-        $push: {
-          "moderation.warnings": { $each: [warningRecord], $slice: -20 },
-        },
+      const updatedWarnings = [...warnings, warningRecord].slice(-20);
+      const moderationUpdate: ModerationState = {
+        ...(user.moderation || {}),
+        warnings: updatedWarnings,
       };
 
       if (warningCount >= MAX_WARNINGS) {
         const banUntil = new Date(now.getTime() + BAN_WINDOW_MS);
-        update.$set = { "moderation.chatBannedUntil": banUntil };
-        await Users.updateOne({ _id: user._id }, update);
+        moderationUpdate.chatBannedUntil = Timestamp.fromDate(banUntil);
+        await userRecord.ref.set(
+          { moderation: moderationUpdate },
+          { merge: true }
+        );
         return NextResponse.json(
           {
             error: "You have been temporarily banned from chat for 24 hours.",
@@ -91,7 +118,10 @@ export async function PUT(
         );
       }
 
-      await Users.updateOne({ _id: user._id }, update);
+      await userRecord.ref.set(
+        { moderation: moderationUpdate },
+        { merge: true }
+      );
       return NextResponse.json(
         {
           error: "Abusive language detected. This is a warning.",
@@ -102,17 +132,21 @@ export async function PUT(
       );
     }
 
-    const msgToUpdate = await Message.findById(id);
-    if (!msgToUpdate) {
+    const msgRef = db.collection("messages").doc(id);
+    const msgSnap = await msgRef.get();
+    if (!msgSnap.exists) {
       return NextResponse.json({ error: "Message not found" }, { status: 404 });
     }
 
-    if (msgToUpdate.sender.toString() !== senderId) {
+    const msgData = msgSnap.data() || {};
+    if (msgData.sender !== senderId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
     }
 
-    msgToUpdate.body = newBody;
-    await msgToUpdate.save();
+    await msgRef.set(
+      { body: newBody, updatedAt: FieldValue.serverTimestamp() },
+      { merge: true }
+    );
 
     return NextResponse.json(
       { success: true, message: "Message updated successfully" },
@@ -129,7 +163,6 @@ export async function DELETE(
   context: { params: Promise<{ id: string }> }
 ) {
   try {
-    await connectDB();
     const { id } = await context.params;
 
     const url = new URL(req.url);
@@ -142,16 +175,18 @@ export async function DELETE(
       );
     }
 
-    const msgToDelete = await Message.findById(id);
-    if (!msgToDelete) {
+    const msgRef = db.collection("messages").doc(id);
+    const msgSnap = await msgRef.get();
+    if (!msgSnap.exists) {
       return NextResponse.json({ error: "Message not found" }, { status: 404 });
     }
 
-    if (msgToDelete.sender.toString() !== senderId) {
+    const msgData = msgSnap.data() || {};
+    if (msgData.sender !== senderId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
     }
 
-    await msgToDelete.deleteOne();
+    await msgRef.delete();
 
     return NextResponse.json(
       { success: true, message: "Message deleted successfully" },

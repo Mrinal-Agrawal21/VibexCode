@@ -1,7 +1,6 @@
-import connectDB from "@/lib/mongodb";
-import Users from "@/models/Users";
-import bcrypt from "bcryptjs";
 import { NextRequest, NextResponse } from "next/server";
+import { auth, db, FieldValue } from "@/lib/firebase-admin";
+import { normalizeEmail } from "@/lib/firestore-helpers";
 
 /**
  * POST /api/signup
@@ -10,13 +9,12 @@ import { NextRequest, NextResponse } from "next/server";
  *
  *  - Firebase path (preferred):
  *    { firebaseUid, email, username }
- *    Creates a Mongo Users record linked to a Firebase Auth account.
+ *    Creates a Firestore Users record linked to a Firebase Auth account.
  *    Idempotent — returns 200 if the user already exists.
  *
- *  - Legacy bcrypt path:
+ *  - Legacy password path (server-side Firebase Auth create):
  *    { email, password, username }
- *    Creates a Mongo Users record with a bcrypt-hashed password. Kept
- *    so anything still POSTing this shape continues to work.
+ *    Creates a Firebase Auth account and matching Firestore Users record.
  */
 export async function POST(request: NextRequest) {
   try {
@@ -30,69 +28,84 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    await connectDB();
+    const normalizedEmail = normalizeEmail(email);
+    if (!normalizedEmail) {
+      return NextResponse.json(
+        { message: "Invalid email" },
+        { status: 400 }
+      );
+    }
 
-    const normalizedEmail = email.toLowerCase().trim();
+    let resolvedUid = typeof firebaseUid === "string" ? firebaseUid : "";
 
-    // Idempotency: if a user with this email already exists, just link the
-    // Firebase UID (if provided) and return success.
-    const existing = await Users.findOne({ email: normalizedEmail });
-    if (existing) {
-      if (firebaseUid && !existing.firebaseUid) {
-        existing.firebaseUid = firebaseUid;
-        await existing.save();
-      }
+    if (!resolvedUid && password) {
+      const created = await auth.createUser({
+        email: normalizedEmail,
+        password,
+        displayName: username,
+      });
+      resolvedUid = created.uid;
+    }
+
+    if (!resolvedUid) {
+      return NextResponse.json(
+        { message: "firebaseUid or password is required" },
+        { status: 400 }
+      );
+    }
+
+    const users = db.collection("users");
+    const byId = await users.doc(resolvedUid).get();
+    if (byId.exists) {
+      const data = byId.data() || {};
       return NextResponse.json(
         {
           message: "User already exists",
-          user: { email: existing.email, username: existing.username },
+          user: {
+            email: (data.email as string) || normalizedEmail,
+            username: (data.username as string) || username,
+          },
         },
         { status: 200 }
       );
     }
 
-    // Firebase path: no password stored in Mongo (Firebase holds credentials).
-    if (firebaseUid) {
-      const newUser = await Users.create({
-        email: normalizedEmail,
-        username,
-        firebaseUid,
-      });
+    const byEmail = await users.where("email", "==", normalizedEmail).limit(1).get();
+    if (!byEmail.empty) {
+      const existing = byEmail.docs[0];
+      await existing.ref.set(
+        { firebaseUid: resolvedUid, updatedAt: FieldValue.serverTimestamp() },
+        { merge: true }
+      );
+      const data = existing.data();
       return NextResponse.json(
         {
-          message: "User created successfully",
-          user: { email: newUser.email, username: newUser.username },
+          message: "User already exists",
+          user: {
+            email: (data.email as string) || normalizedEmail,
+            username: (data.username as string) || username,
+          },
         },
-        { status: 201 }
+        { status: 200 }
       );
     }
 
-    // Legacy bcrypt path.
-    if (!password) {
-      return NextResponse.json(
-        { message: "password or firebaseUid is required" },
-        { status: 400 }
-      );
-    }
-    const hashedPassword = await bcrypt.hash(password, 10);
-    const newUser = await Users.create({
+    await users.doc(resolvedUid).set({
       email: normalizedEmail,
       username,
-      password: hashedPassword,
+      name: username,
+      firebaseUid: resolvedUid,
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
     });
 
-    const response = NextResponse.json(
+    return NextResponse.json(
       {
         message: "User created successfully",
-        user: { email: newUser.email, username: newUser.username },
+        user: { email: normalizedEmail, username },
       },
       { status: 201 }
     );
-    response.headers.set(
-      "Set-Cookie",
-      `token=loggedin; Path=/; HttpOnly; SameSite=Strict; Max-Age=${60 * 60 * 24 * 7}`
-    );
-    return response;
   } catch (error) {
     console.error("Signup error:", error);
     return NextResponse.json(

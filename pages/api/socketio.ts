@@ -3,10 +3,9 @@ import { Server as HTTPServer } from "http";
 import type { NextApiRequest } from "next";
 import type { NextApiResponseServerIO } from "../../types/next"; // your extended type
 import { v4 as uuidv4 } from "uuid";
-import connectDB from "../../lib/mongodb";
-import Users from "../../models/Users";
+import { db } from "../../lib/firebase-admin";
 import { detectAbuse } from "../../lib/moderation";
-import { isValidObjectId } from "mongoose";
+import { toDate } from "../../lib/firestore-helpers";
 
 export const config = {
   api: {
@@ -15,6 +14,29 @@ export const config = {
 };
 
 let io: IOServer | undefined;
+
+type ModerationState = {
+  warnings?: Array<{ at?: string | Date }>;
+  chatBannedUntil?: string | Date;
+};
+
+type UserRecord = {
+  moderation?: ModerationState;
+};
+
+async function resolveUser(senderId: string): Promise<UserRecord | null> {
+  const users = db.collection("users");
+  const byId = await users.doc(senderId).get();
+  if (byId.exists) return (byId.data() as UserRecord) || null;
+
+  const byUid = await users
+    .where("firebaseUid", "==", senderId)
+    .limit(1)
+    .get();
+  if (!byUid.empty) return (byUid.docs[0].data() as UserRecord) || null;
+
+  return null;
+}
 
 export default function handler(
   req: NextApiRequest,
@@ -64,23 +86,11 @@ export default function handler(
         }
 
         try {
-          await connectDB();
-          const userLookup: Array<Record<string, string>> = [
-            { firebaseUid: senderId },
-            { appwriteId: senderId },
-          ];
-          if (isValidObjectId(senderId)) {
-            userLookup.push({ _id: senderId });
-          }
-
-          const user = await Users.findOne({ $or: userLookup }).select(
-            "moderation"
-          );
-
+          const user = await resolveUser(senderId);
           if (!user) return;
 
           const now = new Date();
-          const bannedUntil = user.moderation?.chatBannedUntil;
+          const bannedUntil = toDate(user.moderation?.chatBannedUntil);
           if (bannedUntil && bannedUntil > now) return;
 
           const abuse = detectAbuse(body);

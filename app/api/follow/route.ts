@@ -9,137 +9,134 @@
 // be spoofed until we add server-verified auth tokens.
 
 import { NextRequest, NextResponse } from "next/server";
-import connectDB from "@/lib/mongodb";
-import Follows from "@/models/Follows";
+import { db, FieldValue } from "@/lib/firebase-admin";
 
 export const runtime = "nodejs";
 
 function normalize(email: unknown): string | null {
-  if (typeof email !== "string") return null;
-  const v = email.trim().toLowerCase();
-  return v.length > 0 ? v : null;
+    if (typeof email !== "string") return null;
+    const v = email.trim().toLowerCase();
+    return v.length > 0 ? v : null;
 }
 
 export async function POST(req: NextRequest) {
-  try {
-    const body = await req.json();
-    const follower = normalize(body?.followerEmail);
-    const following = normalize(body?.followingEmail);
-
-    if (!follower || !following) {
-      return NextResponse.json(
-        { success: false, error: "followerEmail and followingEmail are required" },
-        { status: 400 }
-      );
-    }
-    if (follower === following) {
-      return NextResponse.json(
-        { success: false, error: "Cannot follow yourself" },
-        { status: 400 }
-      );
-    }
-
-    await connectDB();
-
-    // Idempotent: re-following returns 200 instead of 409.
     try {
-      await Follows.create({
-        followerEmail: follower,
-        followingEmail: following,
-      });
-    } catch (e) {
-      const code = (e as { code?: number })?.code;
-      if (code === 11000) {
-        return NextResponse.json({
-          success: true,
-          message: "Already following",
-        });
-      }
-      throw e;
-    }
+        const body = await req.json();
+        const follower = normalize(body?.followerEmail);
+        const following = normalize(body?.followingEmail);
 
-    return NextResponse.json({ success: true });
-  } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "Failed to follow";
-    return NextResponse.json(
-      { success: false, error: message },
-      { status: 500 }
-    );
-  }
+        if (!follower || !following) {
+            return NextResponse.json(
+                { success: false, error: "followerEmail and followingEmail are required" },
+                { status: 400 }
+            );
+        }
+        if (follower === following) {
+            return NextResponse.json(
+                { success: false, error: "Cannot follow yourself" },
+                { status: 400 }
+            );
+        }
+
+        const docId = `${follower}__${following}`;
+        const ref = db.collection("follows").doc(docId);
+        const existing = await ref.get();
+        if (existing.exists) {
+            return NextResponse.json({
+                success: true,
+                message: "Already following",
+            });
+        }
+
+        await ref.set({
+            followerEmail: follower,
+            followingEmail: following,
+            createdAt: FieldValue.serverTimestamp(),
+        });
+
+        return NextResponse.json({ success: true });
+    } catch (error) {
+        const message =
+            error instanceof Error ? error.message : "Failed to follow";
+        return NextResponse.json(
+            { success: false, error: message },
+            { status: 500 }
+        );
+    }
 }
 
 export async function DELETE(req: NextRequest) {
-  try {
-    const body = await req.json();
-    const follower = normalize(body?.followerEmail);
-    const following = normalize(body?.followingEmail);
+    try {
+        const body = await req.json();
+        const follower = normalize(body?.followerEmail);
+        const following = normalize(body?.followingEmail);
 
-    if (!follower || !following) {
-      return NextResponse.json(
-        { success: false, error: "followerEmail and followingEmail are required" },
-        { status: 400 }
-      );
+        if (!follower || !following) {
+            return NextResponse.json(
+                { success: false, error: "followerEmail and followingEmail are required" },
+                { status: 400 }
+            );
+        }
+
+        const docId = `${follower}__${following}`;
+        await db.collection("follows").doc(docId).delete();
+
+        return NextResponse.json({ success: true });
+    } catch (error) {
+        const message =
+            error instanceof Error ? error.message : "Failed to unfollow";
+        return NextResponse.json(
+            { success: false, error: message },
+            { status: 500 }
+        );
     }
-
-    await connectDB();
-    await Follows.deleteOne({
-      followerEmail: follower,
-      followingEmail: following,
-    });
-
-    return NextResponse.json({ success: true });
-  } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "Failed to unfollow";
-    return NextResponse.json(
-      { success: false, error: message },
-      { status: 500 }
-    );
-  }
 }
 
 export async function GET(req: NextRequest) {
-  try {
-    const { searchParams } = new URL(req.url);
-    const userEmail = normalize(searchParams.get("userEmail"));
+    try {
+        const { searchParams } = new URL(req.url);
+        const userEmail = normalize(searchParams.get("userEmail"));
 
-    if (!userEmail) {
-      return NextResponse.json(
-        { success: false, error: "userEmail is required" },
-        { status: 400 }
-      );
+        if (!userEmail) {
+            return NextResponse.json(
+                { success: false, error: "userEmail is required" },
+                { status: 400 }
+            );
+        }
+
+        const [followersSnap, followingSnap] = await Promise.all([
+            db
+                .collection("follows")
+                .where("followingEmail", "==", userEmail)
+                .get(),
+            db
+                .collection("follows")
+                .where("followerEmail", "==", userEmail)
+                .get(),
+        ]);
+
+        const followers = followersSnap.docs.map(
+            (doc) => (doc.data().followerEmail as string) || ""
+        );
+        const following = followingSnap.docs.map(
+            (doc) => (doc.data().followingEmail as string) || ""
+        );
+
+        return NextResponse.json({
+            success: true,
+            followers,
+            following,
+            counts: {
+                followers: followers.length,
+                following: following.length,
+            },
+        });
+    } catch (error) {
+        const message =
+            error instanceof Error ? error.message : "Failed to fetch follows";
+        return NextResponse.json(
+            { success: false, error: message },
+            { status: 500 }
+        );
     }
-
-    await connectDB();
-
-    const [followersDocs, followingDocs] = await Promise.all([
-      Follows.find({ followingEmail: userEmail })
-        .select("followerEmail -_id")
-        .lean<Array<{ followerEmail: string }>>(),
-      Follows.find({ followerEmail: userEmail })
-        .select("followingEmail -_id")
-        .lean<Array<{ followingEmail: string }>>(),
-    ]);
-
-    const followers = followersDocs.map((d) => d.followerEmail);
-    const following = followingDocs.map((d) => d.followingEmail);
-
-    return NextResponse.json({
-      success: true,
-      followers,
-      following,
-      counts: {
-        followers: followers.length,
-        following: following.length,
-      },
-    });
-  } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "Failed to fetch follows";
-    return NextResponse.json(
-      { success: false, error: message },
-      { status: 500 }
-    );
-  }
 }
