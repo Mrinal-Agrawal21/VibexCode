@@ -5,9 +5,8 @@
 // wrote to, so the page always 404'd. Now sources data from Questions
 // directly — the same collection /problems and /playground use.
 
-import connectDB from "@/lib/mongodb";
 import { notFound } from "next/navigation";
-import Questions from "@/models/Questions";
+import { db } from "@/lib/firebase-admin";
 
 interface TopicPageProps {
   params: Promise<{
@@ -16,7 +15,7 @@ interface TopicPageProps {
 }
 
 type LeanQuestion = {
-  _id: { toString: () => string };
+  id: string;
   title?: string;
   difficulty?: "easy" | "medium" | "hard";
 };
@@ -31,15 +30,20 @@ export default async function TopicPage({ params }: TopicPageProps) {
   const { topicName: raw } = await params;
   const topicName = decodeURIComponent(raw);
 
-  await connectDB();
+  const normalizedTag = topicName.trim().toLowerCase();
+  const snapshot = await db
+    .collection("questions")
+    .where("tagsLower", "array-contains", normalizedTag)
+    .get();
 
-  // Case-insensitive tag match so "arrays" and "Arrays" both work.
-  const escaped = topicName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const questions = await Questions.find({
-    tags: { $regex: new RegExp(`^${escaped}$`, "i") },
-  })
-    .select("_id title difficulty")
-    .lean<LeanQuestion[]>();
+  const questions: LeanQuestion[] = snapshot.docs.map((doc) => {
+    const data = doc.data();
+    return {
+      id: doc.id,
+      title: data.title || "",
+      difficulty: data.difficulty,
+    };
+  });
 
   if (questions.length === 0) return notFound();
 
@@ -54,8 +58,8 @@ export default async function TopicPage({ params }: TopicPageProps) {
         <div className="space-y-2">
           {questions.map((q, i) => (
             <a
-              key={q._id.toString()}
-              href={`/playground?id=${q._id.toString()}`}
+              key={q.id}
+              href={`/playground?id=${q.id}`}
               className="flex items-center justify-between p-4 bg-gradient-to-r from-purple-500 via-blue-500 to-indigo-500 rounded-xl shadow hover:opacity-90 transition"
             >
               <span className="text-white text-sm">

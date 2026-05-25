@@ -7,29 +7,32 @@
 // Shape: [{ name: "Arrays", count: 12 }, ...]
 
 import { NextResponse } from "next/server";
-import connectDB from "@/lib/mongodb";
-import Questions from "@/models/Questions";
+import { db } from "@/lib/firebase-admin";
 
 export const runtime = "nodejs";
 
 export async function GET() {
   try {
-    await connectDB();
+    const snapshot = await db.collection("questions").get();
+    const counts: Record<string, number> = {};
 
-    const aggregated = await Questions.aggregate<{
-      _id: string;
-      count: number;
-    }>([
-      { $unwind: { path: "$tags", preserveNullAndEmptyArrays: false } },
-      { $match: { tags: { $ne: "" } } },
-      { $group: { _id: "$tags", count: { $sum: 1 } } },
-      { $sort: { count: -1, _id: 1 } },
-    ]);
+    snapshot.docs.forEach((doc) => {
+      const data = doc.data();
+      const tags = Array.isArray(data.tags) ? data.tags : [];
+      tags.forEach((tag) => {
+        if (typeof tag === "string" && tag.trim()) {
+          const key = tag.trim();
+          counts[key] = (counts[key] || 0) + 1;
+        }
+      });
+    });
 
-    const topics = aggregated.map((row) => ({
-      name: row._id,
-      count: row.count,
-    }));
+    const topics = Object.entries(counts)
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => {
+        if (b.count !== a.count) return b.count - a.count;
+        return a.name.localeCompare(b.name);
+      });
 
     return NextResponse.json({ success: true, topics });
   } catch (error) {

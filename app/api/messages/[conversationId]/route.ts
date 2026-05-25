@@ -1,31 +1,106 @@
 import { NextRequest, NextResponse } from "next/server";
-import connectDB from "@/lib/mongodb";
-import Message from "@/models/Messages";
-import Users from "@/models/Users";
-import { isValidObjectId } from "mongoose";
+import { db, FieldValue, Timestamp } from "@/lib/firebase-admin";
 import { detectAbuse } from "@/lib/moderation";
+import { normalizeEmail, toDate, toIso } from "@/lib/firestore-helpers";
 
 const WARNING_WINDOW_MS = 24 * 60 * 60 * 1000;
 const BAN_WINDOW_MS = 24 * 60 * 60 * 1000;
 const MAX_WARNINGS = 3;
 
 type ModerationWarning = {
-  at?: Date;
+  at?: Timestamp | Date | string;
 };
+
+type ModerationState = {
+  warnings?: ModerationWarning[];
+  chatBannedUntil?: Timestamp | Date | string;
+};
+
+type UserRecord = {
+  email?: string;
+  username?: string;
+  firebaseUid?: string;
+  moderation?: ModerationState;
+};
+
+async function resolveUser(
+  senderId: string,
+  senderEmail?: string,
+  senderName?: string
+) {
+  const users = db.collection("users");
+  const byId = await users.doc(senderId).get();
+  if (byId.exists) {
+    return { ref: byId.ref, data: byId.data() as UserRecord };
+  }
+
+  const byUid = await users
+    .where("firebaseUid", "==", senderId)
+    .limit(1)
+    .get();
+  if (!byUid.empty) {
+    const doc = byUid.docs[0];
+    return { ref: doc.ref, data: doc.data() as UserRecord };
+  }
+
+  const email = normalizeEmail(senderEmail);
+  if (!email) {
+    return null;
+  }
+
+  const byEmail = await users.where("email", "==", email).limit(1).get();
+  if (!byEmail.empty) {
+    const doc = byEmail.docs[0];
+    const data = doc.data() as UserRecord;
+    if (!data.firebaseUid) {
+      await doc.ref.set({ firebaseUid: senderId }, { merge: true });
+    }
+    return { ref: doc.ref, data };
+  }
+
+  const username =
+    typeof senderName === "string" && senderName.trim()
+      ? senderName.trim()
+      : email.split("@")[0];
+
+  const newDocRef = users.doc(senderId);
+  const payload: UserRecord & Record<string, unknown> = {
+    email,
+    username,
+    firebaseUid: senderId,
+    createdAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
+  };
+  await newDocRef.set(payload);
+  return { ref: newDocRef, data: payload };
+}
 
 export async function GET(
   req: NextRequest,
   context: { params: Promise<{ conversationId: string }> }
 ) {
   try {
-    await connectDB();
     const { conversationId } = await context.params; // await here
 
     if (!conversationId) {
       return NextResponse.json({ error: "Missing conversationId" }, { status: 400 });
     }
 
-    const messages = await Message.find({ conversation: conversationId }).sort({ createdAt: 1 });
+    const snapshot = await db
+      .collection("messages")
+      .where("conversation", "==", conversationId)
+      .orderBy("createdAt", "asc")
+      .get();
+
+    const messages = snapshot.docs.map((doc) => {
+      const data = doc.data();
+      return {
+        _id: doc.id,
+        ...data,
+        createdAt: toIso(data.createdAt),
+        updatedAt: toIso(data.updatedAt),
+      };
+    });
 
     return NextResponse.json(messages, { status: 200 });
   } catch (err) {
@@ -39,7 +114,6 @@ export async function POST(
   context: { params: Promise<{ conversationId: string }> } // params is a Promise here too
 ) {
   try {
-    await connectDB();
     const { conversationId } = await context.params; // <-- await added
 
     if (!conversationId) {
@@ -53,53 +127,21 @@ export async function POST(
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
     }
 
-    const userLookup: Array<Record<string, string>> = [
-      { firebaseUid: senderId },
-      { appwriteId: senderId },
-    ];
-    if (isValidObjectId(senderId)) {
-      userLookup.push({ _id: senderId });
-    }
-
-    let user = await Users.findOne({ $or: userLookup }).select("moderation");
-
-    if (!user && typeof senderEmail === "string" && senderEmail.trim()) {
-      const normalizedEmail = senderEmail.trim().toLowerCase();
-      const existingByEmail = await Users.findOne({ email: normalizedEmail });
-      if (existingByEmail) {
-        if (!existingByEmail.firebaseUid) {
-          existingByEmail.firebaseUid = senderId;
-          await existingByEmail.save();
-        }
-        user = existingByEmail;
-      } else {
-        const baseUsername =
-          typeof senderName === "string" && senderName.trim()
-            ? senderName.trim()
-            : normalizedEmail.split("@")[0];
-        try {
-          user = await Users.create({
-            email: normalizedEmail,
-            username: baseUsername,
-            firebaseUid: senderId,
-          });
-        } catch (createError) {
-          console.warn("Failed to auto-create user for chat:", createError);
-        }
-      }
-    }
-
-    if (!user) {
+    const userRecord = await resolveUser(senderId, senderEmail, senderName);
+    if (!userRecord) {
       return NextResponse.json({ error: "User not found" }, { status: 404 });
     }
 
+    const user = userRecord.data;
+
     const now = new Date();
     const bannedUntil = user.moderation?.chatBannedUntil;
-    if (bannedUntil && bannedUntil > now) {
+    const bannedUntilDate = toDate(bannedUntil);
+    if (bannedUntilDate && bannedUntilDate > now) {
       return NextResponse.json(
         {
           error: "You are temporarily banned from chat.",
-          bannedUntil: bannedUntil.toISOString(),
+          bannedUntil: bannedUntilDate.toISOString(),
         },
         { status: 403 }
       );
@@ -108,28 +150,33 @@ export async function POST(
     const abuse = detectAbuse(String(messageBody));
     if (abuse.hit) {
       const windowStart = new Date(now.getTime() - WARNING_WINDOW_MS);
-      const recentWarnings = (user.moderation?.warnings || []).filter(
-        (w: ModerationWarning) => w.at && w.at >= windowStart
-      );
+      const warnings = user.moderation?.warnings || [];
+      const recentWarnings = warnings.filter((w: ModerationWarning) => {
+        const warningDate = toDate(w.at);
+        return warningDate ? warningDate >= windowStart : false;
+      });
       const warningCount = recentWarnings.length + 1;
 
       const warningRecord = {
-        at: now,
+        at: Timestamp.fromDate(now),
         reason: "abuse",
         conversationId,
         messagePreview: String(messageBody).slice(0, 200),
       };
 
-      const update: Record<string, unknown> = {
-        $push: {
-          "moderation.warnings": { $each: [warningRecord], $slice: -20 },
-        },
+      const updatedWarnings = [...warnings, warningRecord].slice(-20);
+      const moderationUpdate: ModerationState = {
+        ...(user.moderation || {}),
+        warnings: updatedWarnings,
       };
 
       if (warningCount >= MAX_WARNINGS) {
         const banUntil = new Date(now.getTime() + BAN_WINDOW_MS);
-        update.$set = { "moderation.chatBannedUntil": banUntil };
-        await Users.updateOne({ _id: user._id }, update);
+        moderationUpdate.chatBannedUntil = Timestamp.fromDate(banUntil);
+        await userRecord.ref.set(
+          { moderation: moderationUpdate },
+          { merge: true }
+        );
         return NextResponse.json(
           {
             error: "You have been temporarily banned from chat for 24 hours.",
@@ -140,7 +187,10 @@ export async function POST(
         );
       }
 
-      await Users.updateOne({ _id: user._id }, update);
+      await userRecord.ref.set(
+        { moderation: moderationUpdate },
+        { merge: true }
+      );
       return NextResponse.json(
         {
           error: "Abusive language detected. This is a warning.",
@@ -151,17 +201,28 @@ export async function POST(
       );
     }
 
-    const newMessage = new Message({
+    const messageRef = await db.collection("messages").add({
       conversation: conversationId,
       sender: senderId,
-      senderName,
+      senderName: senderName || "",
       body: messageBody,
-      image,
+      image: image || "",
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
     });
 
-    await newMessage.save();
+    const created = await messageRef.get();
+    const data = created.data() || {};
 
-    return NextResponse.json(newMessage, { status: 201 });
+    return NextResponse.json(
+      {
+        _id: messageRef.id,
+        ...data,
+        createdAt: toIso(data.createdAt),
+        updatedAt: toIso(data.updatedAt),
+      },
+      { status: 201 }
+    );
   } catch (err) {
     console.error("❌ Error saving message:", err);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });

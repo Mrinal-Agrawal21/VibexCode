@@ -4,16 +4,15 @@
 //   Called every ~30s by the client while the page is visible.
 
 import { NextRequest, NextResponse } from "next/server";
-import connectDB from "@/lib/mongodb";
-import Users from "@/models/Users";
+import { db, FieldValue } from "@/lib/firebase-admin";
+import { normalizeEmail } from "@/lib/firestore-helpers";
 
 export const runtime = "nodejs";
 
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => ({}));
-    const email =
-      typeof body?.email === "string" ? body.email.trim().toLowerCase() : "";
+    const email = normalizeEmail(body?.email) || "";
 
     if (!email) {
       return NextResponse.json(
@@ -22,13 +21,14 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    await connectDB();
-    // No-op if the user doesn't exist — we don't want a heartbeat to create
-    // records, and Mongo returns matchedCount=0 silently.
-    await Users.updateOne(
-      { email },
-      { $set: { lastSeen: new Date() } }
-    );
+    const users = db.collection("users");
+    const snapshot = await users.where("email", "==", email).limit(1).get();
+    if (!snapshot.empty) {
+      await snapshot.docs[0].ref.set(
+        { lastSeen: FieldValue.serverTimestamp() },
+        { merge: true }
+      );
+    }
 
     return NextResponse.json({ success: true });
   } catch (error) {

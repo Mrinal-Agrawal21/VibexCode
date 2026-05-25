@@ -1,21 +1,29 @@
 // File: /app/api/user-submissions/route.ts
 
 import { NextRequest, NextResponse } from "next/server";
-import connectDB from "@/lib/mongodb";
-import Submissions from "@/models/Submissions";
+import { db } from "@/lib/firebase-admin";
+import { normalizeEmail } from "@/lib/firestore-helpers";
 
 export const runtime = "nodejs";
 
 export async function GET(req: NextRequest) {
   try {
-    await connectDB();
     const { searchParams } = new URL(req.url);
-    const userEmail = searchParams.get("userEmail");
+    const userEmail = normalizeEmail(searchParams.get("userEmail"));
     if (!userEmail) {
       return NextResponse.json({ success: false, error: "Missing userEmail parameter" }, { status: 400 });
     }
 
-    const submissions = await Submissions.find({ userEmail }).sort({ submittedAt: -1 }).lean();
+    const snapshot = await db
+      .collection("submissions")
+      .where("userEmail", "==", userEmail)
+      .orderBy("submittedAt", "desc")
+      .get();
+
+    const submissions = snapshot.docs.map((doc) => ({
+      _id: doc.id,
+      ...doc.data(),
+    }));
 
     return NextResponse.json({ success: true, submissions }, { status: 200 });
   } catch (error) {

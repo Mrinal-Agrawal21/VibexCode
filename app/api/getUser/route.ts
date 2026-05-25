@@ -1,21 +1,29 @@
 // app/api/getUser/route.ts
 import { NextResponse } from "next/server";
-import mongoose from "mongoose";
-import Users from "@/models/Users";
+import { db } from "@/lib/firebase-admin";
+import { normalizeEmail } from "@/lib/firestore-helpers";
 
 export async function POST(req: Request) {
   try {
     const { email } = await req.json();
 
-    if (!email) return NextResponse.json({ error: "Email required" }, { status: 400 });
+    const normalizedEmail = normalizeEmail(email);
+    if (!normalizedEmail) {
+      return NextResponse.json({ error: "Email required" }, { status: 400 });
+    }
 
-    await mongoose.connect(process.env.MONGODB_URI!);
+    const snapshot = await db
+      .collection("users")
+      .where("email", "==", normalizedEmail)
+      .limit(1)
+      .get();
 
-    const user = await Users.findOne({ email });
+    if (snapshot.empty) {
+      return NextResponse.json({ error: "User not found" }, { status: 404 });
+    }
 
-    if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
-
-    return NextResponse.json({ username: user.username });
+    const user = snapshot.docs[0].data();
+    return NextResponse.json({ username: user.username || "" });
   } catch {
     return NextResponse.json({ error: "Server error" }, { status: 500 });
   }

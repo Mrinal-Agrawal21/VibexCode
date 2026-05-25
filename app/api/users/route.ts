@@ -1,13 +1,18 @@
 // app/api/users/route.ts
 import { NextResponse } from "next/server";
-import connectDB from "@/lib/mongodb";
-import Users from "@/models/Users";
+import { db } from "@/lib/firebase-admin";
 
 export async function GET() {
   try {
-    await connectDB();
-
-    const users = await Users.find({}, "email username").lean(); // `name`, `status`, `activity` are not in schema
+    const snapshot = await db.collection("users").get();
+    const users = snapshot.docs.map((doc) => {
+      const data = doc.data();
+      return {
+        id: doc.id,
+        email: data.email || "",
+        username: data.username || "",
+      };
+    });
 
     return new NextResponse(JSON.stringify({ users }), {
       status: 200,

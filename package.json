@@ -26,6 +26,7 @@
     "cors": "^2.8.5",
     "express": "^5.1.0",
     "firebase": "^11.10.0",
+    "firebase-admin": "^12.6.0",
     "framer-motion": "^12.23.9",
     "html-react-parser": "^5.2.5",
     "lucide-react": "^0.523.0",
