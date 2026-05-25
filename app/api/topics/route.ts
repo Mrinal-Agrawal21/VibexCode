@@ -8,6 +8,7 @@
 
 import { NextResponse } from "next/server";
 import { db } from "@/lib/firebase-admin";
+import type { QueryDocumentSnapshot } from "firebase-admin/firestore";
 
 export const runtime = "nodejs";
 
@@ -16,7 +17,7 @@ export async function GET() {
     const snapshot = await db.collection("questions").get();
     const counts: Record<string, number> = {};
 
-    snapshot.docs.forEach((doc) => {
+    snapshot.docs.forEach((doc: QueryDocumentSnapshot) => {
       const data = doc.data();
       const tags = Array.isArray(data.tags) ? data.tags : [];
       tags.forEach((tag) => {

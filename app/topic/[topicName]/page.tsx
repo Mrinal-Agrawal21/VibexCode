@@ -7,6 +7,7 @@
 
 import { notFound } from "next/navigation";
 import { db } from "@/lib/firebase-admin";
+import type { QueryDocumentSnapshot } from "firebase-admin/firestore";
 
 interface TopicPageProps {
   params: Promise<{
@@ -36,7 +37,7 @@ export default async function TopicPage({ params }: TopicPageProps) {
     .where("tagsLower", "array-contains", normalizedTag)
     .get();
 
-  const questions: LeanQuestion[] = snapshot.docs.map((doc) => {
+  const questions: LeanQuestion[] = snapshot.docs.map((doc: QueryDocumentSnapshot) => {
     const data = doc.data();
     return {
       id: doc.id,

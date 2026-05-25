@@ -23,17 +23,17 @@ export async function GET() {
   try {
     const snapshot = await db.collection("users").get();
     const users = snapshot.docs
-      .map((doc) => {
+      .map((doc: any) => {
         const { _id: _ignored, ...rest } = doc.data() as LeanUser;
         return { ...rest, _id: doc.id };
       })
-      .map((u) => ({
+      .map((u: any) => ({
         ...u,
         lastSeen: toDate(u.lastSeen) || undefined,
         createdAt: toDate(u.createdAt) || undefined,
         updatedAt: toDate(u.updatedAt) || undefined,
       }))
-      .sort((a, b) => {
+      .sort((a: any, b: any) => {
         const aLast = a.lastSeen ? new Date(a.lastSeen).getTime() : 0;
         const bLast = b.lastSeen ? new Date(b.lastSeen).getTime() : 0;
         if (aLast !== bLast) return bLast - aLast;
@@ -43,7 +43,7 @@ export async function GET() {
       })
       .slice(0, 200);
 
-    const decorated = users.map((u) => ({
+    const decorated = users.map((u: any) => ({
       ...u,
       status: derivePresence(u.lastSeen || null),
     }));

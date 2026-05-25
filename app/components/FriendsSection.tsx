@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useSelector } from "react-redux";
-import { collection, getDocs } from "firebase/firestore";
+import { collection, getDocs, QueryDocumentSnapshot } from "firebase/firestore";
 import Link from "next/link";
 import { db } from "@/lib/firebase";
 import { cn } from "@/lib/utils";
@@ -81,7 +81,7 @@ const FriendsSection = () => {
         const snap = await getDocs(collection(db, COLLECTION_NAME));
         if (cancelled) return;
         const map: Record<string, LeaderboardSummary> = {};
-        snap.docs.forEach((doc) => {
+        snap.docs.forEach((doc: QueryDocumentSnapshot) => {
           const d = doc.data();
           const email = (d.email || doc.id).toLowerCase();
           const solved = Array.isArray(d.solvedQuestionIds)

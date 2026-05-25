@@ -92,7 +92,7 @@ export async function GET(
       .orderBy("createdAt", "asc")
       .get();
 
-    const messages = snapshot.docs.map((doc) => {
+    const messages = snapshot.docs.map((doc: any) => {
       const data = doc.data();
       return {
         _id: doc.id,

@@ -3,6 +3,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/firebase-admin";
 import { normalizeEmail } from "@/lib/firestore-helpers";
+import type { QueryDocumentSnapshot } from "firebase-admin/firestore";
 
 export const runtime = "nodejs";
 
@@ -20,7 +21,7 @@ export async function GET(req: NextRequest) {
       .orderBy("submittedAt", "desc")
       .get();
 
-    const submissions = snapshot.docs.map((doc) => ({
+    const submissions = snapshot.docs.map((doc: QueryDocumentSnapshot) => ({
       _id: doc.id,
       ...doc.data(),
     }));

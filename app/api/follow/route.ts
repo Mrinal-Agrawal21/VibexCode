@@ -116,10 +116,10 @@ export async function GET(req: NextRequest) {
         ]);
 
         const followers = followersSnap.docs.map(
-            (doc) => (doc.data().followerEmail as string) || ""
+            (doc: any) => (doc.data().followerEmail as string) || ""
         );
         const following = followingSnap.docs.map(
-            (doc) => (doc.data().followingEmail as string) || ""
+            (doc: any) => (doc.data().followingEmail as string) || ""
         );
 
         return NextResponse.json({

@@ -2,6 +2,7 @@ import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { db, FieldValue } from "@/lib/firebase-admin";
 import { normalizeEmail, toDate } from "@/lib/firestore-helpers";
+import type { DocumentReference, Transaction } from "firebase-admin/firestore";
 
 // POST /api/user/mark-solved
 // Body: { userEmail, questionId, submittedAnswer?, language?, executionStats? }
@@ -37,10 +38,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "User not found" }, { status: 404 });
     }
 
-    const userRef = snapshot.docs[0].ref;
+    const userRef = snapshot.docs[0].ref as DocumentReference;
     let alreadySolved = false;
 
-    await db.runTransaction(async (tx) => {
+    await db.runTransaction(async (tx: Transaction) => {
       const userSnap = await tx.get(userRef);
       if (!userSnap.exists) return;
       const data = userSnap.data() || {};
