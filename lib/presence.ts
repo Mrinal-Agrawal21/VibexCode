@@ -4,8 +4,9 @@
 export type PresenceStatus = "Active" | "Away" | "Offline";
 export type PresenceDevice = "Desktop" | "Mobile";
 
-const ACTIVE_WINDOW_MS = 2 * 60 * 1000;
-const AWAY_WINDOW_MS = 5 * 60 * 1000;
+// Heartbeat fires every 2 min — give a 1-min buffer before flipping to Away.
+const ACTIVE_WINDOW_MS = 3 * 60 * 1000;
+const AWAY_WINDOW_MS = 10 * 60 * 1000;
 
 export function derivePresence(lastSeen?: Date | string | null): PresenceStatus {
   if (!lastSeen) return "Offline";
